@@ -1,0 +1,531 @@
+import os
+import unittest
+import logging
+import vtk, qt, ctk, slicer
+from slicer.ScriptedLoadableModule import *
+from slicer.util import VTKObservationMixin
+import DataPreProcessing2
+import cv2
+import numpy as np
+import pandas as pd
+import shutil
+import math
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+
+#
+# ENS_PRE
+#
+
+class ENS_PRE(ScriptedLoadableModule):
+  """Uses ScriptedLoadableModule base class, available at:
+  https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
+  """
+
+  def __init__(self, parent):
+    ScriptedLoadableModule.__init__(self, parent)
+    self.parent.title = "ENS_PRE"  # TODO: make this more human readable by adding spaces
+    self.parent.categories = ["Examples"]  # TODO: set categories (folders where the module shows up in the module selector)
+    self.parent.dependencies = []  # TODO: add here list of module names that this module requires
+    self.parent.contributors = ["John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
+    # TODO: update with short description of the module and a link to online module documentation
+    self.parent.helpText = """
+This is an example of scripted loadable module bundled in an extension.
+See more information in <a href="https://github.com/organization/projectname#ENS_PRE">module documentation</a>.
+"""
+    # TODO: replace with organization, grant and thanks
+    self.parent.acknowledgementText = """
+This file was originally developed by Jean-Christophe Fillion-Robin, Kitware Inc., Andras Lasso, PerkLab,
+and Steve Pieper, Isomics, Inc. and was partially funded by NIH grant 3P41RR013218-12S1.
+"""
+
+    # Additional initialization step after application startup is complete
+    slicer.app.connect("startupCompleted()", registerSampleData)
+
+#
+# Register sample data sets in Sample Data module
+#
+
+def registerSampleData():
+  """
+  Add data sets to Sample Data module.
+  """
+  # It is always recommended to provide sample data for users to make it easy to try the module,
+  # but if no sample data is available then this method (and associated startupCompeted signal connection) can be removed.
+
+  import SampleData
+  iconsPath = os.path.join(os.path.dirname(__file__), 'Resources/Icons')
+
+  # To ensure that the source code repository remains small (can be downloaded and installed quickly)
+  # it is recommended to store data sets that are larger than a few MB in a Github release.
+
+  # ENS_PRE1
+  SampleData.SampleDataLogic.registerCustomSampleDataSource(
+    # Category and sample name displayed in Sample Data module
+    category='ENS_PRE',
+    sampleName='ENS_PRE1',
+    # Thumbnail should have size of approximately 260x280 pixels and stored in Resources/Icons folder.
+    # It can be created by Screen Capture module, "Capture all views" option enabled, "Number of images" set to "Single".
+    thumbnailFileName=os.path.join(iconsPath, 'ENS_PRE1.png'),
+    # Download URL and target file name
+    uris="https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/998cb522173839c78657f4bc0ea907cea09fd04e44601f17c82ea27927937b95",
+    fileNames='ENS_PRE1.nrrd',
+    # Checksum to ensure file integrity. Can be computed by this command:
+    #  import hashlib; print(hashlib.sha256(open(filename, "rb").read()).hexdigest())
+    checksums = 'SHA256:998cb522173839c78657f4bc0ea907cea09fd04e44601f17c82ea27927937b95',
+    # This node name will be used when the data set is loaded
+    nodeNames='ENS_PRE1'
+  )
+
+  # ENS_PRE2
+  SampleData.SampleDataLogic.registerCustomSampleDataSource(
+    # Category and sample name displayed in Sample Data module
+    category='ENS_PRE',
+    sampleName='ENS_PRE2',
+    thumbnailFileName=os.path.join(iconsPath, 'ENS_PRE2.png'),
+    # Download URL and target file name
+    uris="https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/1a64f3f422eb3d1c9b093d1a18da354b13bcf307907c66317e2463ee530b7a97",
+    fileNames='ENS_PRE2.nrrd',
+    checksums = 'SHA256:1a64f3f422eb3d1c9b093d1a18da354b13bcf307907c66317e2463ee530b7a97',
+    # This node name will be used when the data set is loaded
+    nodeNames='ENS_PRE2'
+  )
+
+#
+# ENS_PREWidget
+#
+
+class ENS_PREWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+  """Uses ScriptedLoadableModuleWidget base class, available at:
+  https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
+  """
+
+  def __init__(self, parent=None):
+    """
+    Called when the user opens the module the first time and the widget is initialized.
+    """
+    ScriptedLoadableModuleWidget.__init__(self, parent)
+    VTKObservationMixin.__init__(self)  # needed for parameter node observation
+    self.logic = None
+    self._parameterNode = None
+    self._updatingGUIFromParameterNode = False
+
+  def setup(self):
+    """
+    Called when the user opens the module the first time and the widget is initialized.
+    """
+    ScriptedLoadableModuleWidget.setup(self)
+
+    # Load widget from .ui file (created by Qt Designer).
+    # Additional widgets can be instantiated manually and added to self.layout.
+    uiWidget = slicer.util.loadUI(self.resourcePath('UI/ENS_PRE.ui'))
+    self.layout.addWidget(uiWidget)
+    self.ui = slicer.util.childWidgetVariables(uiWidget)
+
+    # Set scene in MRML widgets. Make sure that in Qt designer the top-level qMRMLWidget's
+    # "mrmlSceneChanged(vtkMRMLScene*)" signal in is connected to each MRML widget's.
+    # "setMRMLScene(vtkMRMLScene*)" slot.
+    uiWidget.setMRMLScene(slicer.mrmlScene)
+
+    # Create logic class. Logic implements all computations that should be possible to run
+    # in batch mode, without a graphical user interface.
+    self.logic = ENS_PRELogic()
+
+    # Connections
+
+    # These connections ensure that we update parameter node when scene is closed
+    self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
+    self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
+
+    # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
+    # (in the selected parameter node).
+    self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.updateParameterNodeFromGUI)
+    
+
+    # Buttons
+    self.ui.getpath_button.connect('clicked(bool)', self.GetPath_button)
+    self.ui.pro_pre_button.connect('clicked(bool)', self.Pro_Pre_button)
+    
+    
+
+
+
+
+
+    # Make sure parameter node is initialized (needed for module reload)
+    self.initializeParameterNode()
+
+  def cleanup(self):
+    """
+    Called when the application closes and the module widget is destroyed.
+    """
+    self.removeObservers()
+
+  def enter(self):
+    """
+    Called each time the user opens this module.
+    """
+    # Make sure parameter node exists and observed
+    self.initializeParameterNode()
+
+  def exit(self):
+    """
+    Called each time the user opens a different module.
+    """
+    # Do not react to parameter node changes (GUI wlil be updated when the user enters into the module)
+    self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
+
+  def onSceneStartClose(self, caller, event):
+    """
+    Called just before the scene is closed.
+    """
+    # Parameter node will be reset, do not use it anymore
+    self.setParameterNode(None)
+
+  def onSceneEndClose(self, caller, event):
+    """
+    Called just after the scene is closed.
+    """
+    # If this module is shown while the scene is closed then recreate a new parameter node immediately
+    if self.parent.isEntered:
+      self.initializeParameterNode()
+
+  def initializeParameterNode(self):
+    """
+    Ensure parameter node exists and observed.
+    """
+    # Parameter node stores all user choices in parameter values, node selections, etc.
+    # so that when the scene is saved and reloaded, these settings are restored.
+
+    self.setParameterNode(self.logic.getParameterNode())
+
+    # Select default input nodes if nothing is selected yet to save a few clicks for the user
+    if not self._parameterNode.GetNodeReference("InputVolume"):
+      firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+      if firstVolumeNode:
+        self._parameterNode.SetNodeReferenceID("InputVolume", firstVolumeNode.GetID())
+
+  def setParameterNode(self, inputParameterNode):
+    """
+    Set and observe parameter node.
+    Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
+    """
+
+    if inputParameterNode:
+      self.logic.setDefaultParameters(inputParameterNode)
+
+    # Unobserve previously selected parameter node and add an observer to the newly selected.
+    # Changes of parameter node are observed so that whenever parameters are changed by a script or any other module
+    # those are reflected immediately in the GUI.
+    if self._parameterNode is not None:
+      self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
+    self._parameterNode = inputParameterNode
+    if self._parameterNode is not None:
+      self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
+
+    # Initial GUI update
+    self.updateGUIFromParameterNode()
+
+  def updateGUIFromParameterNode(self, caller=None, event=None):
+    """
+    This method is called whenever parameter node is changed.
+    The module GUI is updated to show the current state of the parameter node.
+    """
+
+    if self._parameterNode is None or self._updatingGUIFromParameterNode:
+      return
+
+    # Make sure GUI changes do not call updateParameterNodeFromGUI (it could cause infinite loop)
+    self._updatingGUIFromParameterNode = True
+
+    # Update node selectors and sliders
+    self.ui.inputSelector.setCurrentNode(self._parameterNode.GetNodeReference("InputVolume"))
+    
+
+    # All the GUI updates are done
+    self._updatingGUIFromParameterNode = False
+
+  def updateParameterNodeFromGUI(self, caller=None, event=None):
+    """
+    This method is called when the user makes any change in the GUI.
+    The changes are saved into the parameter node (so that they are restored when the scene is saved and loaded).
+    """
+
+    if self._parameterNode is None or self._updatingGUIFromParameterNode:
+      return
+
+    wasModified = self._parameterNode.StartModify()  # Modify all properties in a single batch
+
+    self._parameterNode.SetNodeReferenceID("InputVolume", self.ui.inputSelector.currentNodeID)
+    
+
+    self._parameterNode.EndModify(wasModified)
+    self.ui.gender_num.value
+
+  path = ''
+  datalist = []
+
+  
+
+
+
+  def GetPath_button(self):
+
+    slicer.modules.DataProbeInstance.infoWidget.sliceAnnotations.sliceViewAnnotationsEnabled = False
+    slicer.modules.DataProbeInstance.infoWidget.sliceAnnotations.updateSliceViewFromGUI()
+
+    datalist1 = []
+    
+    volumeName = str(self.ui.inputSelector.currentNodeID)
+
+    n = slicer.util.getNode(volumeName)
+    displayNode = n.GetDisplayNode()
+    displayNode.AutoWindowLevelOff()
+    displayNode.SetWindow(2000)
+    displayNode.SetLevel(350)
+    instUids = n.GetAttribute('DICOM.instanceUIDs').split()
+    for i in range(len(instUids)):
+      dcm = slicer.dicomDatabase.fileForInstance(instUids[i])
+      datalist1.append(dcm)
+    
+    filename = str(dcm)
+    filesplit = filename.split('/')
+    global path
+    path = filesplit[0] + '/'
+    for i in range(1, (len(filesplit) - 1)):
+      path = path + filesplit[i] + '/'
+    shutil.rmtree(path + 'PNGfile')
+    os.mkdir(path + 'PNGfile')
+    self.ui.Path_label.setText(path)
+    DataPreProcessing2.mkdir(path + 'PNGfile')
+    layoutName = 'Red'
+    imagePathPattern = path + 'PNGfile/' + 'image-%03d.png'
+    steps = len(datalist1)
+
+    widget = slicer.app.layoutManager().sliceWidget(layoutName)
+    view = widget.sliceView()
+    logic = widget.sliceLogic()
+    bounds = [0, ] * 6
+    logic.GetSliceBounds(bounds)
+
+    for step in range(steps):
+      offset = bounds[4] + step / (1. * steps) * (bounds[5] - bounds[4])
+      logic.SetSliceOffset(offset)
+      view.forceRender()
+      image = qt.QPixmap.grabWidget(view).toImage()
+      image.save(imagePathPattern % step)
+
+  def Pro_Pre_button(self):
+    prediction=0
+    datalist2 = []
+    volumeName = str(self.ui.inputSelector.currentNodeID)
+    n = slicer.util.getNode(volumeName)
+    instUids = n.GetAttribute('DICOM.instanceUIDs').split()
+    for i in range(len(instUids)):
+      dcm = slicer.dicomDatabase.fileForInstance(instUids[i])
+      datalist2.append(dcm)
+    steps = len(datalist2)
+    pnglist = []
+    global path
+    imagePathPattern = path + 'PNGfile/' + 'image-%03d.png'
+    for step in range(steps):
+      pnglist.append(imagePathPattern % step)
+    df = pd.DataFrame(pnglist)
+    df.to_csv(path + 'PNGfile/test.csv')
+    df = pd.read_csv(path + 'PNGfile/test.csv')
+    pnglist = list(df['0'])
+    self.ui.view_label.setText(pnglist[0])
+    pnglist = list(df['0'])
+    datapng = DataPreProcessing2.load_img4d_to_list(pnglist)
+    data = datapng.astype(np.uint8)  # 迴歸
+    data_list = [[] for _ in range(len(data))]
+    for i in range(len(data)):
+      datai = data[i][75:140]
+      data_list[i].append(datai)
+    data = DataPreProcessing2.convert_to_array(data_list)
+    data = data / 255
+    h5path=os.path.dirname(os.path.abspath(__file__))
+    h5path=h5path.replace("\\",'/')
+
+
+    if self.ui.sleepDys_radio.isChecked():
+      checkpoint = h5path + '/' +"sleepDys_107_256_reg_classification_checkpoint_1113_3000_bn.h5"
+      model_name = h5path + '/' +"sleepDys_107_256_reg_modelsmall_1113_3000_bn.h5"
+
+    if self.ui.ens_radio.isChecked():
+      checkpoint = h5path + '/' + "ens_107_256_reg_classification_checkpoint_1119_3000_bn.h5"
+      model_name = h5path + '/' + "ens_107_256_reg_modelsmall_1119_3000_bn.h5"
+
+    if self.ui.snot22_radio.isChecked():
+      checkpoint = h5path + '/' + "SNOT22Q_107_256_reg_classification_checkpoint_1126_3000_bn.h5"
+      model_name = h5path + '/' + "SNOT22Q_107_256_reg_modelsmall_1126_3000_bn.h5"
+
+    if self.ui.snot25_radio.isChecked():
+      checkpoint = h5path + '/' + "SNOT25Q_107_256_reg_classification_checkpoint_1201_3000_bn.h5"
+      model_name = h5path + '/' + 'SNOT25Q_107_256_reg_modelsmall_1201_3000_bn.h5'
+
+
+    if self.ui.ens6q_radio.isChecked():
+      checkpoint = h5path + '/' + "ens6q_107_256_reg_classification_checkpoint_1123_3000_bn.h5"
+      model_name = h5path + '/' + "ens6q_107_256_reg_modelsmall_1123_3000_bn.h5"
+
+    model = tf.keras.models.load_model(model_name)
+    model.load_weights(checkpoint)
+    prediction = model.predict(data)
+
+
+    if self.ui.sleepDys_radio.isChecked() and prediction!=0:
+      #Remove key formulas due to the confidentiality factor of the paper
+    if self.ui.ens_radio.isChecked() and prediction!=0:
+      #Remove key formulas due to the confidentiality factor of the paper
+    if self.ui.snot22_radio.isChecked() and prediction!=0:
+      #Remove key formulas due to the confidentiality factor of the paper
+
+    if self.ui.snot25_radio.isChecked() and prediction!=0:
+      #Remove key formulas due to the confidentiality factor of the paper
+
+    
+    if self.ui.ens6q_radio.isChecked() and prediction!=0:
+      #Remove key formulas due to the confidentiality factor of the paper
+      
+
+    result=np.round(result,4)
+    output_result=100*result
+    if output_result>50:
+      self.ui.output_label2.setText('The indicator may be bad')
+      if output_result>99:
+        output_result=99.9
+    else:
+      self.ui.output_label2.setText('The indicator may be normal')
+    self.ui.output_label1.setText(output_result)
+
+
+
+
+
+
+
+
+#
+# ENS_PRELogic
+#
+
+class ENS_PRELogic(ScriptedLoadableModuleLogic):
+  """This class should implement all the actual
+  computation done by your module.  The interface
+  should be such that other python code can import
+  this class and make use of the functionality without
+  requiring an instance of the Widget.
+  Uses ScriptedLoadableModuleLogic base class, available at:
+  https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
+  """
+
+  def __init__(self):
+    """
+    Called when the logic class is instantiated. Can be used for initializing member variables.
+    """
+    ScriptedLoadableModuleLogic.__init__(self)
+
+  def setDefaultParameters(self, parameterNode):
+    """
+    Initialize parameter node with default settings.
+    """
+    if not parameterNode.GetParameter("Threshold"):
+      parameterNode.SetParameter("Threshold", "100.0")
+    if not parameterNode.GetParameter("Invert"):
+      parameterNode.SetParameter("Invert", "false")
+
+  def process(self, inputVolume, outputVolume, imageThreshold, invert=False, showResult=True):
+    """
+    Run the processing algorithm.
+    Can be used without GUI widget.
+    :param inputVolume: volume to be thresholded
+    :param outputVolume: thresholding result
+    :param imageThreshold: values above/below this threshold will be set to 0
+    :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
+    :param showResult: show output volume in slice viewers
+    """
+
+    if not inputVolume or not outputVolume:
+      raise ValueError("Input or output volume is invalid")
+
+    import time
+    startTime = time.time()
+    logging.info('Processing started')
+
+    # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
+    cliParams = {
+      'InputVolume': inputVolume.GetID(),
+      'ThresholdValue' : imageThreshold,
+      'ThresholdType' : 'Above' if invert else 'Below'
+      }
+    cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True, update_display=showResult)
+    # We don't need the CLI module node anymore, remove it to not clutter the scene with it
+    slicer.mrmlScene.RemoveNode(cliNode)
+
+    stopTime = time.time()
+    logging.info('Processing completed in {0:.2f} seconds'.format(stopTime-startTime))
+
+#
+# ENS_PRETest
+#
+
+class ENS_PRETest(ScriptedLoadableModuleTest):
+  """
+  This is the test case for your scripted module.
+  Uses ScriptedLoadableModuleTest base class, available at:
+  https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
+  """
+
+  def setUp(self):
+    """ Do whatever is needed to reset the state - typically a scene clear will be enough.
+    """
+    slicer.mrmlScene.Clear()
+
+  def runTest(self):
+    """Run as few or as many tests as needed here.
+    """
+    self.setUp()
+    self.test_ENS_PRE1()
+
+  def test_ENS_PRE1(self):
+    """ Ideally you should have several levels of tests.  At the lowest level
+    tests should exercise the functionality of the logic with different inputs
+    (both valid and invalid).  At higher levels your tests should emulate the
+    way the user would interact with your code and confirm that it still works
+    the way you intended.
+    One of the most important features of the tests is that it should alert other
+    developers when their changes will have an impact on the behavior of your
+    module.  For example, if a developer removes a feature that you depend on,
+    your test should break so they know that the feature is needed.
+    """
+
+    self.delayDisplay("Starting the test")
+
+    # Get/create input data
+
+    import SampleData
+    registerSampleData()
+    inputVolume = SampleData.downloadSample('ENS_PRE1')
+    self.delayDisplay('Loaded test data set')
+
+    inputScalarRange = inputVolume.GetImageData().GetScalarRange()
+    self.assertEqual(inputScalarRange[0], 0)
+    self.assertEqual(inputScalarRange[1], 695)
+
+    
+    threshold = 100
+
+    # Test the module logic
+
+    logic = ENS_PRELogic()
+
+    # Test algorithm with non-inverted threshold
+    logic.process(inputVolume, threshold, True)
+    
+
+    # Test algorithm with inverted threshold
+    logic.process(inputVolume, threshold, False)
+    
+
+    self.delayDisplay('Test passed')
